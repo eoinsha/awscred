@@ -120,12 +120,52 @@ function loadRegionFromEnvSync() {
 function loadCredentialsFromIniFile(options, cb) {
   if (!cb) { cb = options; options = {} }
 
-  loadProfileFromIniFile(options, 'credentials', function(err, profile) {
+  loadProfileFromIniFile(options, 'credentials', function(err, credentials) {
+    if (err) return cb(err)
+    if (!credentials || !credentials.aws_access_key_id) {
+      // Credentials may be assumed by a source_profile. Load profile config to see if that's the case.
+      loadProfileFromIniFile(options, 'config', function(profileErr, profile) {
+        if (profileErr) return cb(profileErr)
+        if (profile.role_arn) {
+          // Assume role with source_profile credentials
+          loadProfileFromIniFile({ profile: profile.source_profile }, 'credentials', function (sourceProfileErr, sourceCredentials) {
+            if (sourceProfileErr) return cb(sourceProfileErr)
+            var sessionName = options.profile || resolveProfile()
+            loadCredentialsFromAssumedRole(profile, sourceCredentials, sessionName, cb)
+          })
+        } else {
+          cb(null, {})
+        }
+      })
+    } else {
+      cb(null, {
+        accessKeyId: credentials.aws_access_key_id,
+        secretAccessKey: credentials.aws_secret_access_key,
+        sessionToken: credentials.aws_session_token,
+      })
+    }
+  })
+}
+
+function loadCredentialsFromAssumedRole(profile, sourceCredentials, sessionName, cb) {
+  var STS = require('aws-sdk').STS
+  var sts = new STS({
+    region: profile.region,
+    accessKeyId: sourceCredentials.aws_access_key_id,
+    accessKeyId: sourceCredentials.aws_secret_access_key,
+    sessionToken: sourceCredentials.aws_session_token
+  })
+
+  sts.assumeRole({
+    RoleArn: profile.role_arn,
+    RoleSessionName: sessionName
+  }, function (err, data) {
     if (err) return cb(err)
     cb(null, {
-      accessKeyId: profile.aws_access_key_id,
-      secretAccessKey: profile.aws_secret_access_key,
-      sessionToken: profile.aws_session_token,
+      accessKeyId: data.Credentials.AccessKeyId,
+      expiration: data.Credentials.Expiration,
+      secretAccessKey: data.Credentials.SecretAccessKey,
+      sessionToken: data.Credentials.SessionToken
     })
   })
 }
@@ -229,7 +269,8 @@ function loadProfileFromIniFile(options, defaultFilename, cb) {
     if (err && err.code == 'ENOENT') return cb(null, {})
     if (err) return cb(err)
     var parsedIni = parseAwsIni(data)
-    cb(null, parsedIni['profile ' + profile] || parsedIni[profile] || {})
+    const profileConfig = readProfileConfig(parsedIni, profile)
+    cb(null, profileConfig)
   })
 }
 
@@ -246,7 +287,20 @@ function loadProfileFromIniFileSync(options, defaultFilename) {
   }
 
   var parsedIni = parseAwsIni(data)
-  return parsedIni['profile ' + profile] || parsedIni[profile] || {}
+  return readProfileConfig(parsedIni, profile)
+}
+
+function readProfileConfig(parsedIni, profile) {
+  var profileConfig = parsedIni['profile ' + profile] || parsedIni[profile] || {}
+  if (profileConfig.source_profile) {
+    var sourceProfileConfig = parsedIni['profile ' + profileConfig.source_profile] || parsedIni[profileConfig.source_profile] || {}
+    for (var key in sourceProfileConfig) {
+      if (typeof profileConfig[key] === 'undefined') {
+        profileConfig[key] = sourceProfileConfig[key]
+      }
+    }
+  }
+  return profileConfig
 }
 
 function merge(obj, options, cb) {

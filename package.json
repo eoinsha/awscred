@@ -13,5 +13,11 @@
   ],
   "author": "Michael Hart <michael.hart.au@gmail.com>",
   "license": "MIT",
-  "scripts": {}
+  "scripts": {},
+  "peerDependencies": {
+    "aws-sdk": "*"
+  },
+  "devDependencies": {
+    "aws-sdk": "^2.458.0"
+  }
 }
